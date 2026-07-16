@@ -1,0 +1,9 @@
+Coloque aqui os áudios gerados no NotebookLM, com estes nomes exatos:
+  00.mp3  -> Visão geral do exame
+  01.mp3  -> Domínio 1 (Princípios Essenciais)
+  02.mp3  -> Domínio 2 (Segurança de Redes)
+  03.mp3  -> Domínio 3 (Endpoint)
+  04.mp3  -> Domínio 4 (Vulnerabilidades e Risco)
+  05.mp3  -> Domínio 5 (Incidentes)
+Assim que o arquivo estiver aqui, a seção Podcasts do app toca automaticamente.
+Passo a passo completo em ../COMO-USAR.md

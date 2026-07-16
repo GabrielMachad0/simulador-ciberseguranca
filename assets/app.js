@@ -1,0 +1,643 @@
+/* ============================================================================
+   Simulador CCST Cybersecurity — lógica da aplicação
+   Depende de window.AREAS e window.QUESTIONS (assets/questions.js)
+   ============================================================================ */
+(function () {
+  "use strict";
+
+  const AREAS = window.AREAS;
+  const QUESTIONS = window.QUESTIONS;
+  const app = document.getElementById("app");
+  const progEl = document.getElementById("qprogress");
+  const progBar = progEl.querySelector("i");
+  const timerEl = document.getElementById("timer");
+  const LETTERS = ["A", "B", "C", "D", "E"];
+  const STORE_KEY = "sim_ccst_stats_v1";
+  const THEME_KEY = "sim_ccst_theme";
+  const PASS = 70;
+
+  let session = null; // {list, idx, answers[], flags{}, instant, mode, area, timed, endAt}
+  let tick = null;
+
+  /* --------------------------- histórico (localStorage) --------------------------- */
+  function loadStats() { try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch (e) { return {}; } }
+  function saveStats(s) { try { localStorage.setItem(STORE_KEY, JSON.stringify(s)); } catch (e) {} }
+  function recordAnswer(area, correct) {
+    const s = loadStats();
+    s[area] = s[area] || { seen: 0, right: 0 };
+    s[area].seen++; if (correct) s[area].right++;
+    saveStats(s);
+  }
+
+  /* --------------------------- tema --------------------------- */
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme") ||
+      (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  }
+  window.toggleTheme = function () {
+    const next = currentTheme() === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+  };
+  (function initTheme() { try { const t = localStorage.getItem(THEME_KEY); if (t) document.documentElement.setAttribute("data-theme", t); } catch (e) {} })();
+
+  /* --------------------------- utilidades --------------------------- */
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  }
+  function countByArea() {
+    const c = {}; Object.keys(AREAS).forEach(k => c[k] = 0);
+    QUESTIONS.forEach(q => c[q.a]++); return c;
+  }
+  function arraysEqual(a, b) {
+    if (a.length !== b.length) return false;
+    const sa = a.slice().sort((x, y) => x - y), sb = b.slice().sort((x, y) => x - y);
+    return sa.every((v, i) => v === sb[i]);
+  }
+  // embaralha as alternativas mantendo o mapeamento das corretas
+  function prepareQuestion(q) {
+    const order = shuffle(q.o.map((_, i) => i));
+    const cset = Array.isArray(q.c) ? q.c : [q.c];
+    return {
+      a: q.a, sub: q.sub, q: q.q,
+      o: order.map(i => q.o[i]),
+      e: order.map(i => q.e[i]),
+      c: cset.map(ci => order.indexOf(ci)).sort((x, y) => x - y),
+      multi: cset.length > 1,
+    };
+  }
+
+  /* =============================== HOME =============================== */
+  window.goHome = function () {
+    session = null; fc = null; stopTimer();
+    progEl.classList.add("hidden");
+    timerEl.classList.add("hidden");
+    const cnt = countByArea();
+    const stats = loadStats();
+
+    app.innerHTML = `
+    <div class="hero fade">
+      <div class="eyebrow">Cisco CCST Cybersecurity · Analista de Cibersegurança Jr</div>
+      <h1>Simulador explicativo para o exame</h1>
+      <p class="lead">Banco de ${QUESTIONS.length} questões em português, mapeadas aos 5 domínios oficiais do exame. Cada questão mostra a resposta certa <b>e por que cada alternativa está certa ou errada</b>. Há questões de resposta única e de múltipla escolha, como na prova real.</p>
+
+      <div class="modes">
+        <button class="mode" onclick="startExam()">
+          <div class="mi">▶</div>
+          <div><h3>Simulado cronometrado</h3><p>30 questões balanceadas pelos domínios, 40 min, correção só no final — nas mesmas condições da prova (corte 70%).</p></div>
+        </button>
+        <button class="mode" onclick="showPractice()">
+          <div class="mi">◎</div>
+          <div><h3>Praticar por domínio</h3><p>Escolha um dos 5 domínios e responda com explicação imediata. Ideal para reforçar pontos fracos.</p></div>
+        </button>
+        <button class="mode" onclick="startAll()">
+          <div class="mi">∞</div>
+          <div><h3>Maratona (todas as questões)</h3><p>Todas as ${QUESTIONS.length} questões embaralhadas, com correção imediata. Revisão geral completa.</p></div>
+        </button>
+        <button class="mode" onclick="showMaterial()">
+          <div class="mi">📖</div>
+          <div><h3>Material de estudo</h3><p>Resumão da teoria dos 5 domínios do CCST — leia e já treine em seguida. Definições, portas, criptografia, frameworks e mais.</p></div>
+        </button>
+        <button class="mode" onclick="showFlashcards()">
+          <div class="mi">🃏</div>
+          <div><h3>Flashcards</h3><p>Memorização rápida: veja a frente, tente lembrar, vire a carta. O que marcar como "revisar" volta no fim (repetição espaçada).</p></div>
+        </button>
+        <button class="mode" onclick="showPodcasts()">
+          <div class="mi">🎧</div>
+          <div><h3>Podcasts</h3><p>Ouça os episódios de cada domínio para estudar no trânsito ou na academia. Gerados por você no NotebookLM a partir dos roteiros incluídos.</p></div>
+        </button>
+      </div>
+
+      <h2 style="margin-top:38px">Seu desempenho por domínio</h2>
+      <div class="topics">
+        ${Object.keys(AREAS).map(k => {
+          const st = stats[k];
+          const pct = st && st.seen ? Math.round(st.right / st.seen * 100) : null;
+          const barColor = pct === null ? "var(--line)" : pct >= 70 ? "var(--ok)" : pct >= 50 ? "var(--warn)" : "var(--bad)";
+          return `
+          <button class="topic" onclick="startArea('${k}')">
+            <div class="trow"><h3>${AREAS[k].nome}</h3><span class="cnt">${cnt[k]}q · ~${AREAS[k].peso}%</span></div>
+            <div class="meter"><i style="width:${pct === null ? 0 : pct}%;background:${barColor}"></i></div>
+            <span class="stat">${pct === null ? "ainda não praticado" : pct + "% de acerto · " + st.right + "/" + st.seen + " respondidas"}</span>
+          </button>`;
+        }).join("")}
+      </div>
+      <div style="text-align:center;margin-top:16px"><button class="reset-link" onclick="resetStats()">Zerar meu histórico de desempenho</button></div>
+      <p class="footer-note">Atalhos: <span class="kbd">1</span>–<span class="kbd">5</span> marcar · <span class="kbd">Enter</span> avançar · <span class="kbd">←</span> <span class="kbd">→</span> navegar<br>Baseado no blueprint oficial CCST Cybersecurity (100-160) da Cisco</p>
+    </div>`;
+    window.scrollTo({ top: 0 });
+  };
+  window.resetStats = function () { if (confirm("Apagar todo o histórico de desempenho?")) { saveStats({}); goHome(); } };
+
+  window.showPractice = function () {
+    stopTimer(); session = null; fc = null; progEl.classList.add("hidden"); timerEl.classList.add("hidden");
+    const cnt = countByArea();
+    app.innerHTML = `
+    <div class="hero fade">
+      <div class="eyebrow">Praticar por domínio</div>
+      <h1 style="font-size:28px">Escolha o domínio para treinar</h1>
+      <p class="lead">Correção e explicação imediatas após cada questão.</p>
+      <div class="topics">
+        ${Object.keys(AREAS).map(k => `
+          <button class="topic" onclick="startArea('${k}')">
+            <div class="trow"><h3>${AREAS[k].nome}</h3><span class="cnt">${cnt[k]}q</span></div>
+            <span class="stat">~${AREAS[k].peso}% do exame</span>
+          </button>`).join("")}
+      </div>
+      <div style="margin-top:22px"><button class="btn ghost" onclick="goHome()">← Voltar</button></div>
+    </div>`;
+    window.scrollTo({ top: 0 });
+  };
+
+  /* =============================== MATERIAL DE ESTUDO =============================== */
+  const MATERIAL = window.MATERIAL || {};
+  window.showMaterial = function () {
+    stopTimer(); session = null; fc = null; progEl.classList.add("hidden"); timerEl.classList.add("hidden");
+    app.innerHTML = `
+    <div class="hero fade">
+      <div class="eyebrow">Material de estudo</div>
+      <h1 style="font-size:28px">Resumão dos 5 domínios do CCST</h1>
+      <p class="lead">Leia a teoria e, ao final de cada domínio, treine com as questões daquele domínio. Baseado no blueprint oficial CCST Cybersecurity (100-160).</p>
+      <div class="topics">
+        ${Object.keys(AREAS).map(k => {
+          const n = (MATERIAL[k] || []).length;
+          return `<button class="topic" onclick="openMaterial('${k}')">
+            <div class="trow"><h3>${AREAS[k].nome}</h3><span class="cnt">${n} tópicos</span></div>
+            <span class="stat">${(MATERIAL[k] || []).map(s => s.sub).join(" · ")}</span>
+          </button>`;
+        }).join("")}
+      </div>
+      <div style="margin-top:22px"><button class="btn ghost" onclick="goHome()">← Voltar</button></div>
+    </div>`;
+    window.scrollTo({ top: 0 });
+  };
+
+  window.openMaterial = function (area) {
+    stopTimer(); session = null; fc = null; progEl.classList.add("hidden"); timerEl.classList.add("hidden");
+    const secs = MATERIAL[area] || [];
+    const keys = Object.keys(AREAS);
+    const pos = keys.indexOf(area);
+    const nextArea = pos >= 0 && pos < keys.length - 1 ? keys[pos + 1] : null;
+    app.innerHTML = `
+    <div class="fade">
+      <div class="qhead">
+        <span class="tag"><span class="dot" style="background:${AREAS[area].cor}"></span>${AREAS[area].nome}</span>
+        <span class="spacer"></span>
+        <button class="btn ghost" style="padding:7px 12px;font-size:13px" onclick="showMaterial()">← Domínios</button>
+      </div>
+      <div class="material">
+        ${secs.map(s => `
+          <article class="mcard">
+            <div class="msub">${s.sub} · ${AREAS[area].sub[s.sub] || ""}</div>
+            <h3>${s.t}</h3>
+            ${s.html}
+          </article>`).join("")}
+      </div>
+      <div class="qnav" style="justify-content:center;margin-top:26px">
+        <button class="btn primary" onclick="startArea('${area}')">Treinar este domínio →</button>
+        ${nextArea ? `<button class="btn" onclick="openMaterial('${nextArea}')">Próximo domínio: ${AREAS[nextArea].nome}</button>` : ""}
+      </div>
+      <div style="text-align:center;margin-top:18px"><button class="btn ghost" style="font-size:13px" onclick="goHome()">Início</button></div>
+    </div>`;
+    window.scrollTo({ top: 0 });
+  };
+
+  /* =============================== FLASHCARDS =============================== */
+  const FC = window.FLASHCARDS || {};
+  let fc = null;
+
+  window.showFlashcards = function () {
+    stopTimer(); session = null; fc = null; progEl.classList.add("hidden"); timerEl.classList.add("hidden");
+    const total = Object.keys(FC).reduce((n, k) => n + (FC[k] || []).length, 0);
+    app.innerHTML = `
+    <div class="hero fade">
+      <div class="eyebrow">Flashcards</div>
+      <h1 style="font-size:28px">Memorização rápida</h1>
+      <p class="lead">Escolha um baralho. Veja a frente, tente responder de cabeça e vire a carta. Marque <b>"Já sei"</b> ou <b>"Revisar"</b> — as de revisar voltam no fim até você mandar bem em todas.</p>
+      <div class="topics">
+        <button class="topic" onclick="startFlashcards('all')" style="grid-column:1/-1">
+          <div class="trow"><h3>Baralho completo — todos os domínios</h3><span class="cnt">${total} cartas</span></div>
+          <span class="stat">mistura tudo, embaralhado</span>
+        </button>
+        ${Object.keys(AREAS).map(k => `
+          <button class="topic" onclick="startFlashcards('${k}')">
+            <div class="trow"><h3>${AREAS[k].nome}</h3><span class="cnt">${(FC[k] || []).length} cartas</span></div>
+          </button>`).join("")}
+      </div>
+      <div style="margin-top:22px"><button class="btn ghost" onclick="goHome()">← Voltar</button></div>
+    </div>`;
+    window.scrollTo({ top: 0 });
+  };
+
+  window.startFlashcards = function (area) {
+    let src = area === "all" ? [].concat.apply([], Object.keys(FC).map(k => (FC[k] || []).map(c => ({ f: c.f, b: c.b, area: k })))) : (FC[area] || []).map(c => ({ f: c.f, b: c.b, area: area }));
+    if (!src.length) { showFlashcards(); return; }
+    fc = { area: area, queue: shuffle(src), total: src.length, known: 0, flipped: false };
+    renderCard();
+  };
+
+  function renderCard() {
+    progEl.classList.remove("hidden");
+    const card = fc.queue[0];
+    const done = fc.known;
+    progBar.style.width = (done / fc.total * 100) + "%";
+    if (!card) { renderFcDone(); return; }
+    const a = card.area;
+    app.innerHTML = `
+    <div class="fade">
+      <div class="qhead">
+        <span class="tag"><span class="dot" style="background:${AREAS[a] ? AREAS[a].cor : "var(--accent)"}"></span>${AREAS[a] ? AREAS[a].nome : "Flashcards"}</span>
+        <span class="spacer"></span>
+        <span class="qcount">Sabidas <b>${fc.known}</b>/${fc.total} · restam ${fc.queue.length}</span>
+      </div>
+
+      <button class="flashcard ${fc.flipped ? "flipped" : ""}" onclick="flipCard()" aria-label="Virar carta">
+        <div class="fc-inner">
+          <div class="fc-face fc-front"><span class="fc-hint">frente · clique para virar</span><div class="fc-text">${card.f}</div></div>
+          <div class="fc-face fc-back"><span class="fc-hint">resposta</span><div class="fc-text">${card.b}</div></div>
+        </div>
+      </button>
+
+      <div class="qnav" style="justify-content:center">
+        ${fc.flipped
+          ? `<button class="btn" style="border-color:var(--warn);color:var(--warn)" onclick="rateCard(false)">↻ Revisar de novo</button>
+             <button class="btn primary" onclick="rateCard(true)">✓ Já sei</button>`
+          : `<button class="btn primary" onclick="flipCard()">Mostrar resposta</button>`}
+      </div>
+      <div style="text-align:center;margin-top:16px">
+        <button class="btn ghost" style="font-size:13px" onclick="showFlashcards()">Trocar baralho</button>
+        <button class="btn ghost" style="font-size:13px" onclick="goHome()">Início</button>
+      </div>
+      <p class="footer-note">Atalhos: <span class="kbd">Espaço</span> virar · <span class="kbd">1</span> já sei · <span class="kbd">2</span> revisar</p>
+    </div>`;
+    window.scrollTo({ top: 0 });
+  }
+  window.flipCard = function () { fc.flipped = !fc.flipped; renderCard(); };
+  window.rateCard = function (known) {
+    const card = fc.queue.shift();
+    if (known) fc.known++;
+    else fc.queue.push(card); // volta para o fim
+    fc.flipped = false;
+    renderCard();
+  };
+  function renderFcDone() {
+    progBar.style.width = "100%";
+    app.innerHTML = `
+    <div class="fade scorehero">
+      <div style="font-size:52px;margin:10px 0">🎉</div>
+      <h1 style="font-size:26px">Baralho concluído!</h1>
+      <p class="passline" style="color:var(--muted)">Você revisou todas as ${fc.total} cartas até acertar de cabeça.</p>
+      <div class="qnav" style="justify-content:center;margin-top:22px">
+        <button class="btn" onclick="startFlashcards('${fc.area}')">Repetir este baralho</button>
+        <button class="btn" onclick="showFlashcards()">Outro baralho</button>
+        <button class="btn primary" onclick="goHome()">Início</button>
+      </div>
+    </div>`;
+    window.scrollTo({ top: 0 });
+  }
+
+  /* =============================== PODCASTS =============================== */
+  const PODS = window.PODCASTS || [];
+  window.showPodcasts = function () {
+    stopTimer(); session = null; fc = null; progEl.classList.add("hidden"); timerEl.classList.add("hidden");
+    app.innerHTML = `
+    <div class="hero fade">
+      <div class="eyebrow">Podcasts</div>
+      <h1 style="font-size:28px">Estude de ouvido</h1>
+      <p class="lead">Um episódio por domínio, no estilo conversa entre professores. Você gera os áudios no <b>NotebookLM</b> a partir dos roteiros da pasta <span class="mono">podcasts/</span> e salva em <span class="mono">podcasts/audio/</span> — veja <span class="mono">COMO-USAR.md</span>. Aparecendo aqui, é só dar play.</p>
+      <div class="pods">
+        ${PODS.map(ep => `
+          <div class="podcard">
+            <div class="podtop">
+              <span class="podnum" style="background:${ep.area && AREAS[ep.area] ? AREAS[ep.area].cor : "var(--accent)"}">${ep.num}</span>
+              <div class="podmeta"><h3>${ep.titulo}</h3><p>${ep.desc}</p></div>
+            </div>
+            <div class="pod-player" id="pod-${ep.num}"><span class="pod-loading">verificando áudio…</span></div>
+          </div>`).join("")}
+      </div>
+      <div style="margin-top:22px"><button class="btn ghost" onclick="goHome()">← Voltar</button></div>
+    </div>`;
+    PODS.forEach(checkAudio);
+    window.scrollTo({ top: 0 });
+  };
+  function checkAudio(ep) {
+    if (typeof fetch === "undefined") return;
+    var el = document.getElementById("pod-" + ep.num);
+    if (!el) return;
+    var exts = ["mp3", "m4a", "wav", "ogg", "opus", "aac"];
+    var base = "podcasts/audio/" + ep.num + ".";
+    (function tryExt(i) {
+      if (i >= exts.length) {
+        el.innerHTML = '<div class="pod-hint">🔇 Áudio ainda não adicionado. Gere no NotebookLM (veja <span class="mono">podcasts/COMO-USAR.md</span>) e salve como <span class="mono">' + base + 'm4a</span> (ou .mp3) na pasta <span class="mono">podcasts/audio/</span>.</div>';
+        return;
+      }
+      var url = base + exts[i];
+      fetch(url, { method: "HEAD" }).then(function (r) {
+        if (r && r.ok && String(r.headers.get("content-type") || "").indexOf("html") === -1) {
+          el.innerHTML = '<audio controls preload="none" src="' + url + '"></audio>';
+        } else { tryExt(i + 1); }
+      }).catch(function () { tryExt(i + 1); });
+    })(0);
+  }
+
+  /* =============================== INICIAR =============================== */
+  window.startArea = function (area) {
+    const list = shuffle(QUESTIONS.filter(q => q.a === area)).map(prepareQuestion);
+    session = newSession(list, { instant: true, mode: "area", area });
+    renderQuiz();
+  };
+  window.startAll = function () {
+    const list = shuffle(QUESTIONS).map(prepareQuestion);
+    session = newSession(list, { instant: true, mode: "all" });
+    renderQuiz();
+  };
+  window.startExam = function () {
+    const target = Math.min(QUESTIONS.length, 30);
+    const byArea = {}; Object.keys(AREAS).forEach(k => byArea[k] = shuffle(QUESTIONS.filter(q => q.a === k)));
+    let picks = [];
+    Object.keys(AREAS).forEach(k => {
+      const n = Math.max(1, Math.round(target * AREAS[k].peso / 100));
+      picks.push(...byArea[k].slice(0, Math.min(n, byArea[k].length)));
+    });
+    let pool = shuffle(QUESTIONS.filter(q => picks.indexOf(q) === -1));
+    while (picks.length < target && pool.length) picks.push(pool.pop());
+    const list = shuffle(picks).slice(0, target).map(prepareQuestion);
+    session = newSession(list, { instant: false, mode: "exam", timed: true, minutes: 40 });
+    startTimer();
+    renderQuiz();
+  };
+  function newSession(list, opts) {
+    fc = null; // sai do modo flashcards ao iniciar um quiz
+    return Object.assign({ list, idx: 0, answers: list.map(() => null), flags: {}, review: false }, opts);
+  }
+
+  /* =============================== CRONÔMETRO =============================== */
+  function startTimer() {
+    session.endAt = perfNow() + session.minutes * 60 * 1000;
+    timerEl.classList.remove("hidden");
+    updateTimer();
+    tick = setInterval(updateTimer, 500);
+  }
+  function stopTimer() { if (tick) { clearInterval(tick); tick = null; } }
+  function perfNow() { return (typeof performance !== "undefined" && performance.now) ? performance.timeOrigin + performance.now() : new Date().getTime(); }
+  function updateTimer() {
+    if (!session || !session.endAt) return;
+    let left = Math.max(0, Math.round((session.endAt - perfNow()) / 1000));
+    const m = Math.floor(left / 60), s = left % 60;
+    timerEl.textContent = "⏱ " + m + ":" + String(s).padStart(2, "0");
+    timerEl.classList.toggle("low", left <= 60);
+    if (left <= 0) { stopTimer(); finish(true); }
+  }
+
+  /* =============================== QUIZ =============================== */
+  function renderQuiz() {
+    progEl.classList.remove("hidden");
+    const s = session, i = s.idx, q = s.list[i];
+    const ans = s.answers[i];
+    const answered = ans !== null;
+    const showFeedback = s.instant && answered;
+    progBar.style.width = (i / s.list.length * 100) + "%";
+
+    app.innerHTML = `
+    <div class="fade">
+      <div class="qhead">
+        <span class="tag"><span class="dot" style="background:${AREAS[q.a].cor}"></span>${AREAS[q.a].nome}</span>
+        <span class="subtag">${q.sub} · ${AREAS[q.a].sub[q.sub] || ""}</span>
+        <span class="spacer"></span>
+        <span class="qcount">Questão <b>${i + 1}</b> / ${s.list.length}</span>
+      </div>
+
+      <div class="card">
+        <div class="qtext">${q.q}</div>
+        ${q.multi ? `<div class="multi-hint">Múltipla escolha — selecione ${q.c.length}</div>` : ""}
+        <div class="options">
+          ${q.o.map((opt, oi) => {
+            let cls = "opt" + (q.multi ? " multi" : "");
+            const selected = Array.isArray(ans) ? ans.indexOf(oi) !== -1 : ans === oi;
+            if (showFeedback) {
+              cls += " locked";
+              if (q.c.indexOf(oi) !== -1) cls += " correct";
+              else if (selected) cls += " wrong";
+            } else if (selected) cls += " sel";
+            let mark = "";
+            if (showFeedback) {
+              if (q.c.indexOf(oi) !== -1) mark = '<span class="mark" style="color:var(--ok)">✓</span>';
+              else if (selected) mark = '<span class="mark" style="color:var(--bad)">✗</span>';
+            }
+            return `<button class="${cls}" ${showFeedback ? "" : `onclick="pick(${oi})"`}>
+              <span class="key">${LETTERS[oi]}</span><span class="otext">${opt}</span>${mark}</button>`;
+          }).join("")}
+        </div>
+        ${showFeedback ? feedbackHTML(q, ans) : (s.instant ? "" : (answered ? '<p style="color:var(--muted);font-size:13px;margin:16px 0 0">Resposta registrada. As explicações aparecem no resultado final.</p>' : ""))}
+      </div>
+
+      <div class="qnav">
+        <button class="btn ghost" onclick="prevQ()" ${i === 0 ? "disabled" : ""}>← Anterior</button>
+        <button class="flagbtn ${s.flags[i] ? "on" : ""}" onclick="toggleFlag()">${s.flags[i] ? "⚑ Sinalizada" : "⚐ Sinalizar"}</button>
+        <span class="spacer"></span>
+        ${nextBtnHTML()}
+      </div>
+      <div style="text-align:center;margin-top:18px"><button class="btn ghost" style="font-size:13px;padding:8px 14px" onclick="confirmQuit()">Sair para o início</button></div>
+    </div>`;
+    window.scrollTo({ top: 0 });
+  }
+
+  function isAnswered(a, multi) { return multi ? (Array.isArray(a) && a.length > 0) : a !== null; }
+
+  function nextBtnHTML() {
+    const s = session, q = s.list[s.idx], last = s.idx === s.list.length - 1;
+    if (s.instant) {
+      const answered = isAnswered(s.answers[s.idx], q.multi);
+      const label = last ? "Ver resultado" : "Próxima →";
+      const fn = last ? "finish()" : "nextQ()";
+      // em múltipla escolha, o botão "confirmar" aparece antes do feedback
+      if (q.multi && answered && !feedbackShown()) {
+        return `<button class="btn primary" onclick="confirmMulti()">Confirmar resposta</button>`;
+      }
+      return `<button class="btn primary" onclick="${fn}" ${feedbackShown() ? "" : "disabled"}>${label}</button>`;
+    } else {
+      if (last) return `<button class="btn primary" onclick="finish()">Finalizar prova</button>`;
+      return `<button class="btn primary" onclick="nextQ()">Próxima →</button>`;
+    }
+  }
+  function feedbackShown() {
+    const s = session, q = s.list[s.idx], a = s.answers[s.idx];
+    if (!s.instant) return isAnswered(a, q.multi);
+    if (q.multi) return s._mConfirmed === s.idx; // confirmado explicitamente
+    return a !== null;
+  }
+
+  function feedbackHTML(q, ans) {
+    const sel = Array.isArray(ans) ? ans : (ans === null ? [] : [ans]);
+    const correct = arraysEqual(sel, q.c);
+    const correctLetters = q.c.map(i => LETTERS[i]).join(", ");
+    return `
+    <div class="explain">
+      <div class="verdict ${correct ? "ok" : "bad"}">${correct ? "✓ Você acertou" : "✗ Resposta incorreta"}</div>
+      <div class="exp-block" style="border-color:var(--ok);background:var(--ok-soft)">
+        <h4>Resposta correta — ${correctLetters}</h4>
+        <div>${q.c.map(i => q.e[i]).join("<br>")}</div>
+      </div>
+      <div class="exp-block">
+        <h4>Por que cada alternativa</h4>
+        <div class="exp-why">
+          ${q.o.map((opt, oi) => `
+            <div class="row ${q.c.indexOf(oi) !== -1 ? "good" : "no"}">
+              <span class="k">${LETTERS[oi]}</span><span>${q.e[oi]}</span></div>`).join("")}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  window.pick = function (oi) {
+    const s = session, q = s.list[s.idx];
+    if (feedbackShown() && s.instant) return; // já corrigida
+    if (q.multi) {
+      let cur = Array.isArray(s.answers[s.idx]) ? s.answers[s.idx].slice() : [];
+      const pos = cur.indexOf(oi);
+      if (pos === -1) { if (cur.length < q.c.length) cur.push(oi); } // limita à qtd de corretas
+      else cur.splice(pos, 1);
+      s.answers[s.idx] = cur;
+      renderQuiz();
+    } else {
+      const already = s.answers[s.idx] !== null;
+      s.answers[s.idx] = oi;
+      if (s.instant && !already) recordAnswer(q.a, oi === q.c[0] && q.c.length === 1);
+      renderQuiz();
+    }
+  };
+  window.confirmMulti = function () {
+    const s = session, q = s.list[s.idx];
+    const sel = Array.isArray(s.answers[s.idx]) ? s.answers[s.idx] : [];
+    s._mConfirmed = s.idx;
+    if (s.instant) recordAnswer(q.a, arraysEqual(sel, q.c));
+    renderQuiz();
+  };
+  window.nextQ = function () { if (session.idx < session.list.length - 1) { session.idx++; session._mConfirmed = restoreMConfirm(); renderQuiz(); } };
+  window.prevQ = function () { if (session.idx > 0) { session.idx--; session._mConfirmed = restoreMConfirm(); renderQuiz(); } };
+  function restoreMConfirm() {
+    // ao voltar/avançar, considera confirmada se já respondida em modo instant
+    const s = session, q = s.list[s.idx], a = s.answers[s.idx];
+    if (s.instant && q.multi && Array.isArray(a) && a.length > 0) return s.idx;
+    return -1;
+  }
+  window.toggleFlag = function () { session.flags[session.idx] = !session.flags[session.idx]; renderQuiz(); };
+  window.confirmQuit = function () { if (confirm("Sair e descartar esta sessão?")) { stopTimer(); goHome(); } };
+
+  /* =============================== RESULTADO =============================== */
+  window.finish = function (byTime) {
+    const s = session; stopTimer();
+    if (!s.instant) {
+      s.list.forEach((q, i) => { const a = s.answers[i]; const sel = Array.isArray(a) ? a : (a === null ? [] : [a]); recordAnswer(q.a, arraysEqual(sel, q.c)); });
+    }
+    progBar.style.width = "100%";
+    timerEl.classList.add("hidden");
+
+    let right = 0;
+    const perArea = {};
+    s.list.forEach((q, i) => {
+      perArea[q.a] = perArea[q.a] || { right: 0, total: 0 };
+      perArea[q.a].total++;
+      const a = s.answers[i]; const sel = Array.isArray(a) ? a : (a === null ? [] : [a]);
+      if (arraysEqual(sel, q.c)) { right++; perArea[q.a].right++; }
+    });
+    const total = s.list.length;
+    const pct = Math.round(right / total * 100);
+    const passed = pct >= PASS;
+    const circ = 2 * Math.PI * 66;
+    const ringColor = pct >= 70 ? "var(--ok)" : pct >= 50 ? "var(--warn)" : "var(--bad)";
+
+    app.innerHTML = `
+    <div class="fade">
+      <div class="scorehero">
+        <div class="ring">
+          <svg width="150" height="150" viewBox="0 0 150 150">
+            <circle cx="75" cy="75" r="66" fill="none" stroke="var(--surface-2)" stroke-width="12"/>
+            <circle cx="75" cy="75" r="66" fill="none" stroke="${ringColor}" stroke-width="12" stroke-linecap="round"
+              stroke-dasharray="${circ}" stroke-dashoffset="${circ * (1 - pct / 100)}"/>
+          </svg>
+          <div class="num"><b>${pct}%</b><span>${right}/${total}</span></div>
+        </div>
+        <h1 style="font-size:26px">${passed ? "Aprovado no simulado! 🎯" : "Ainda não passou — dá pra virar"}</h1>
+        <p class="passline" style="color:var(--muted)">${byTime ? "<b style='color:var(--bad)'>Tempo esgotado.</b> " : ""}Corte de referência: <b style="color:var(--ink)">${PASS}%</b>. ${passed ? "Continue reforçando os domínios mais fracos abaixo." : "Foque nos domínios em vermelho e refaça."}</p>
+      </div>
+
+      <h2 style="margin-top:20px">Desempenho por domínio</h2>
+      <div class="breakdown">
+        ${Object.keys(perArea).sort((a, b) => (perArea[a].right / perArea[a].total) - (perArea[b].right / perArea[b].total)).map(k => {
+          const pa = perArea[k]; const p = Math.round(pa.right / pa.total * 100);
+          const col = p >= 70 ? "var(--ok)" : p >= 50 ? "var(--warn)" : "var(--bad)";
+          const label = p >= 70 ? "sólido" : p >= 50 ? "reforçar" : "prioridade";
+          return `
+          <div class="bdrow">
+            <div class="top"><h3>${AREAS[k].nome}</h3><span class="pct" style="color:${col}">${p}% · ${label}</span></div>
+            <div class="meter"><i style="width:${p}%;background:${col}"></i></div>
+            <div class="sub">${pa.right} de ${pa.total} corretas</div>
+          </div>`;
+        }).join("")}
+      </div>
+
+      <div class="qnav" style="justify-content:center">
+        <button class="btn" onclick="reviewSession()">Revisar respostas com explicação</button>
+        <button class="btn" onclick="retryWrong()" ${right === total ? "disabled" : ""}>Refazer só as que errei</button>
+        <button class="btn primary" onclick="goHome()">Início</button>
+      </div>
+      <p class="footer-note">Seu histórico foi salvo neste navegador.</p>
+    </div>`;
+    window.scrollTo({ top: 0 });
+  };
+
+  window.reviewSession = function () {
+    session.instant = true; session.idx = 0; session.review = true; session._mConfirmed = restoreMConfirm();
+    // marca todas as múltiplas já respondidas como confirmadas na revisão
+    session._reviewAll = true;
+    renderReview();
+  };
+  function renderReview() { session._mConfirmed = session.idx; renderQuizReview(); }
+  function renderQuizReview() {
+    // reaproveita renderQuiz mas garante feedback visível em toda questão respondida
+    const s = session, q = s.list[s.idx], a = s.answers[s.idx];
+    if (q.multi && Array.isArray(a)) s._mConfirmed = s.idx;
+    renderQuiz();
+  }
+
+  window.retryWrong = function () {
+    const s = session;
+    const wrong = [];
+    s.list.forEach((q, i) => { const a = s.answers[i]; const sel = Array.isArray(a) ? a : (a === null ? [] : [a]); if (!arraysEqual(sel, q.c)) wrong.push(q); });
+    if (!wrong.length) { goHome(); return; }
+    const list = shuffle(wrong).map(q => {
+      const order = shuffle(q.o.map((_, i) => i));
+      return { a: q.a, sub: q.sub, q: q.q, o: order.map(i => q.o[i]), e: order.map(i => q.e[i]), c: q.c.map(ci => order.indexOf(ci)).sort((x, y) => x - y), multi: q.multi };
+    });
+    session = newSession(list, { instant: true, mode: "retry" });
+    renderQuiz();
+  };
+
+  /* =============================== TECLADO =============================== */
+  document.addEventListener("keydown", function (e) {
+    if (fc && fc.queue) {
+      if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); flipCard(); }
+      else if (fc.flipped && (e.key === "1")) rateCard(true);
+      else if (fc.flipped && (e.key === "2")) rateCard(false);
+      return;
+    }
+    if (!session) return;
+    const s = session, q = s.list[s.idx]; if (!q) return;
+    if (["1", "2", "3", "4", "5"].indexOf(e.key) !== -1) {
+      const oi = parseInt(e.key, 10) - 1;
+      if (oi < q.o.length && !(s.instant && feedbackShown())) pick(oi);
+    } else if (e.key === "Enter") {
+      if (s.instant) {
+        if (q.multi && isAnswered(s.answers[s.idx], true) && !feedbackShown()) { confirmMulti(); return; }
+        if (!feedbackShown()) return;
+      }
+      if (s.idx === s.list.length - 1) finish(); else nextQ();
+    } else if (e.key === "ArrowLeft") { prevQ(); }
+    else if (e.key === "ArrowRight") { if (!(s.instant && !feedbackShown())) nextQ(); }
+  });
+
+  goHome();
+})();
