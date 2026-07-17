@@ -83,6 +83,33 @@
     const cnt = countByArea();
     const stats = loadStats();
     const R = window.Study ? Study.readiness() : null;
+    let planHTML = "";
+    if (window.Plan) {
+      const p = Plan.load();
+      if (p) {
+        const steps = Plan.routine(p, R);
+        const pc = Plan.pace(p, R);
+        const first = (steps.find(s => s.mode) || {}).mode || "adaptive";
+        planHTML = `
+        <div class="plan">
+          <div class="plan-head">
+            <div><div class="plan-eye">🧭 Seu plano de hoje</div><div class="plan-pace">${pc.recado}</div></div>
+            <button class="btn primary" onclick="startMode('${first}')">Começar agora</button>
+          </div>
+          <ol class="plan-steps">
+            ${steps.map(s => `<li class="${s.mode ? "clk" : ""}" ${s.mode ? `onclick="startMode('${s.mode}')"` : ""}><span class="pi">${s.icon}</span><span class="pl"><b>${s.label}</b><small>${s.why}</small></span>${s.mode ? '<span class="parrow">›</span>' : ""}</li>`).join("")}
+          </ol>
+          <div class="plan-foot"><button class="reset-link" onclick="showDiagnostic()">refazer diagnóstico</button></div>
+        </div>`;
+      } else {
+        planHTML = `
+        <button class="plan-cta" onclick="showDiagnostic()">
+          <span class="pc-i">🧭</span>
+          <span class="pc-t"><b>Monte seu plano de estudo (2 min)</b><small>Descubra o formato que grava melhor pra você e receba uma rotina diária sob medida.</small></span>
+          <span class="parrow">›</span>
+        </button>`;
+      }
+    }
     let readyHTML = "";
     if (R) {
       const col = R.pct >= 70 ? "var(--ok)" : R.pct >= 45 ? "var(--warn)" : "var(--bad)";
@@ -123,6 +150,7 @@
       <h1>Simulador explicativo para o exame</h1>
       <p class="lead">Banco de ${QUESTIONS.length} questões em português, mapeadas aos 5 domínios oficiais do exame. Cada questão mostra a resposta certa <b>e por que cada alternativa está certa ou errada</b>. Há questões de resposta única e de múltipla escolha, como na prova real.</p>
 
+      ${planHTML}
       ${readyHTML}
 
       <div class="modes">
@@ -407,6 +435,76 @@
       }).catch(function () { tryExt(i + 1); });
     })(0);
   }
+
+  /* =============================== DIAGNÓSTICO / PLANO =============================== */
+  // roteia um "modo" recomendado para a ação certa
+  window.startMode = function (mode) {
+    if (mode === "flash-due") return startFlashcards("due");
+    if (mode === "flash-mac") return startFlashcards("mac");
+    if (mode === "adaptive") return startAdaptive();
+    if (mode === "missed") return startMissed();
+    if (mode === "exam") return startExam();
+    if (mode === "podcasts") return showPodcasts();
+    if (mode === "material") return showMaterial();
+    return goHome();
+  };
+
+  var diag = {};
+  window.diagPick = function (field, value, btn) {
+    diag[field] = value;
+    var group = btn.parentNode.querySelectorAll(".diagopt");
+    for (var i = 0; i < group.length; i++) group[i].classList.remove("sel");
+    btn.classList.add("sel");
+    var b = document.getElementById("diag-go");
+    if (b) b.disabled = !(diag.prazo && diag.minutos && diag.contexto && diag.formato);
+  };
+  window.submitDiagnostic = function () {
+    if (!(diag.prazo && diag.minutos && diag.contexto && diag.formato)) return;
+    var p = Plan.build({ prazo: diag.prazo, minutos: parseInt(diag.minutos, 10), contexto: diag.contexto, formato: diag.formato });
+    Plan.save(p);
+    goHome();
+  };
+  window.showDiagnostic = function () {
+    stopTimer(); session = null; fc = null; progEl.classList.add("hidden"); timerEl.classList.add("hidden");
+    diag = {};
+    function group(field, opts) {
+      return '<div class="diaggroup">' + opts.map(function (o) {
+        return '<button class="diagopt" onclick="diagPick(\'' + field + '\',\'' + o[0] + '\',this)">' + o[1] + '</button>';
+      }).join("") + '</div>';
+    }
+    app.innerHTML = `
+    <div class="hero fade">
+      <div class="eyebrow">Diagnóstico · 2 minutos</div>
+      <h1 style="font-size:27px">Descubra o seu melhor jeito de estudar</h1>
+      <p class="lead">Sem quiz de "estilo de aprendizagem" (isso é mito). Vou ajustar o plano ao seu <b>contexto</b> e ao formato que <b>gravou melhor</b> quando você experimentar de verdade, logo abaixo.</p>
+
+      <div class="diagq"><h3>1. Quando é (ou pode ser) sua prova?</h3>
+        ${group("prazo", [["semana", "Menos de 1 semana"], ["mes", "2–4 semanas"], ["dois", "1–2 meses"], ["sem_data", "Sem data ainda"]])}</div>
+
+      <div class="diagq"><h3>2. Quanto tempo por dia você consegue estudar?</h3>
+        ${group("minutos", [["15", "~15 min"], ["30", "~30 min"], ["60", "1h ou mais"]])}</div>
+
+      <div class="diagq"><h3>3. Como costuma ser o seu momento de estudo?</h3>
+        ${group("contexto", [["audio", "Em movimento / ocupado (áudio)"], ["foco", "Sentado, com foco"], ["misto", "Misto"]])}</div>
+
+      <div class="diagq"><h3>4. Experimente o MESMO conceito em 4 formatos — depois diga qual gravou melhor</h3>
+        <p class="diaghint">Conceito-teste: <b>as faixas de severidade do CVSS</b>. Leia os quatro:</p>
+        <div class="fmtcards">
+          <div class="fmtcard"><span class="fmttag">📖 Ler</span>O CVSS vai de 0 a 10: até 3,9 é baixa; de 4 a 6,9 é média; de 7 a 8,9 é alta; de 9 a 10 é crítica.</div>
+          <div class="fmtcard"><span class="fmttag">🧠 Macete</span>Regra <b>4-7-9</b>: no 4 vira média, no 7 vira alta, no 9 vira crítica.</div>
+          <div class="fmtcard"><span class="fmttag">🃏 Flashcard</span><b>Frente:</b> faixas do CVSS? · <b>Verso:</b> baixa &lt;4, média 4–6,9, alta 7–8,9, crítica 9–10.</div>
+          <div class="fmtcard"><span class="fmttag">🗣️ Explicar</span>Sem olhar: a partir de que nota o CVSS vira "crítica"? (…) Confira: <b>9</b>.</div>
+        </div>
+        <p class="diaghint">Qual desses fez o conceito <b>clicar</b> mais rápido pra você?</p>
+        ${group("formato", [["ler", "📖 Ler o resumo"], ["macete", "🧠 O macete"], ["flashcard", "🃏 O flashcard"], ["explicar", "🗣️ Explicar com minhas palavras"]])}</div>
+
+      <div class="qnav" style="justify-content:center;margin-top:8px">
+        <button class="btn primary" id="diag-go" disabled onclick="submitDiagnostic()">Gerar meu plano →</button>
+        <button class="btn ghost" onclick="goHome()">Agora não</button>
+      </div>
+    </div>`;
+    window.scrollTo({ top: 0 });
+  };
 
   /* =============================== INICIAR =============================== */
   window.startArea = function (area) {
