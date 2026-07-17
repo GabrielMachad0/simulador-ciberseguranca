@@ -170,6 +170,29 @@ h2 { font-size: 20px; letter-spacing: -.3px; margin: 0 0 14px; }
 .kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 5px; background: var(--surface); color: var(--muted); }
 .reset-link { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; text-decoration: underline; font-family: var(--sans); }
 
+/* Painel de prontidão */
+.ready { display: flex; gap: 18px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; box-shadow: var(--shadow); margin-bottom: 6px; }
+.ready-ring { position: relative; flex: none; width: 86px; height: 86px; }
+.ready-num { position: absolute; inset: 0; display: grid; place-items: center; font-family: var(--mono); font-weight: 700; font-size: 22px; letter-spacing: -1px; }
+.ready-num small { font-size: 12px; font-weight: 600; }
+.ready-info { flex: 1; min-width: 0; }
+.ready-label { font-family: var(--mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--accent-ink); font-weight: 600; }
+.ready-sub { font-size: 13.5px; color: var(--muted); margin: 3px 0 10px; line-height: 1.45; }
+.ready-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.rchip { font-family: var(--mono); font-size: 11px; padding: 4px 9px; border-radius: 20px; background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.rchip.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.rchip.acc { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); }
+.ready-weak { font-size: 13px; margin-top: 10px; }
+.linkbtn { background: none; border: none; color: var(--accent-ink); font-weight: 700; cursor: pointer; font-family: var(--sans); font-size: 13px; padding: 0; }
+.linkbtn:hover { text-decoration: underline; }
+@media (max-width: 480px) { .ready { flex-direction: column; text-align: center; } .ready-chips { justify-content: center; } }
+
+/* destaque e badges nos modos */
+.mode.featured { border-color: var(--accent); background: linear-gradient(180deg, var(--accent-soft), var(--surface) 60%); }
+.badge { font-family: var(--mono); font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 20px; background: var(--accent); color: var(--on-accent); vertical-align: middle; margin-left: 4px; }
+.badge.warn { background: var(--warn); color: #fff; }
+.badge.acc { background: var(--accent); color: var(--on-accent); }
+
 /* Podcasts */
 .pods { display: grid; gap: 12px; margin-top: 8px; }
 .podcard { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; box-shadow: var(--shadow); }

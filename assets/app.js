@@ -28,6 +28,11 @@
     s[area].seen++; if (correct) s[area].right++;
     saveStats(s);
   }
+  // registra a resposta no motor de estudo (agregado + por questão + agendamento)
+  function rec(q, correct) {
+    if (window.Study) Study.record(q.id, q.a, q.sub, correct);
+    else recordAnswer(q.a, correct);
+  }
 
   /* --------------------------- tema --------------------------- */
   function currentTheme() {
@@ -62,6 +67,7 @@
     const cset = Array.isArray(q.c) ? q.c : [q.c];
     return {
       a: q.a, sub: q.sub, q: q.q,
+      id: q.__id || (window.Study ? Study.qid(q.q) : ""),
       o: order.map(i => q.o[i]),
       e: order.map(i => q.e[i]),
       c: cset.map(ci => order.indexOf(ci)).sort((x, y) => x - y),
@@ -76,6 +82,40 @@
     timerEl.classList.add("hidden");
     const cnt = countByArea();
     const stats = loadStats();
+    const R = window.Study ? Study.readiness() : null;
+    let readyHTML = "";
+    if (R) {
+      const col = R.pct >= 70 ? "var(--ok)" : R.pct >= 45 ? "var(--warn)" : "var(--bad)";
+      const circ = 2 * Math.PI * 34;
+      const enough = R.seen >= 15;
+      const msg = !enough
+        ? `Responda mais algumas questões para calibrar sua prontidão (${R.seen} até agora).`
+        : (R.pct >= 70 ? "No caminho da aprovação. Mantenha a constância e feche os pontos fracos."
+          : "Ainda abaixo do corte. Foque no ponto mais fraco e nos seus erros pendentes.");
+      const weakName = R.weakest ? AREAS[R.weakest].nome : "—";
+      readyHTML = `
+      <div class="ready">
+        <div class="ready-ring">
+          <svg width="86" height="86" viewBox="0 0 86 86">
+            <circle cx="43" cy="43" r="34" fill="none" stroke="var(--surface-2)" stroke-width="8"/>
+            <circle cx="43" cy="43" r="34" fill="none" stroke="${col}" stroke-width="8" stroke-linecap="round"
+              transform="rotate(-90 43 43)" stroke-dasharray="${circ}" stroke-dashoffset="${circ * (1 - (enough ? R.pct : 0) / 100)}"/>
+          </svg>
+          <div class="ready-num">${enough ? R.pct + "<small>%</small>" : "—"}</div>
+        </div>
+        <div class="ready-info">
+          <div class="ready-label">Prontidão para a prova</div>
+          <div class="ready-sub">${msg}</div>
+          <div class="ready-chips">
+            <span class="rchip">🎯 corte 70%</span>
+            <span class="rchip ${R.pending ? "warn" : ""}">🔁 ${R.pending} erro(s) pendente(s)</span>
+            <span class="rchip ${R.due ? "acc" : ""}">🃏 ${R.due} p/ revisar hoje</span>
+            ${R.streak > 1 ? `<span class="rchip">🔥 ${R.streak} dias seguidos</span>` : ""}
+          </div>
+          ${enough ? `<div class="ready-weak">Ponto mais fraco: <b>${weakName}</b> · <button class="linkbtn" onclick="startArea('${R.weakest}')">atacar agora →</button></div>` : ""}
+        </div>
+      </div>`;
+    }
 
     app.innerHTML = `
     <div class="hero fade">
@@ -83,7 +123,17 @@
       <h1>Simulador explicativo para o exame</h1>
       <p class="lead">Banco de ${QUESTIONS.length} questões em português, mapeadas aos 5 domínios oficiais do exame. Cada questão mostra a resposta certa <b>e por que cada alternativa está certa ou errada</b>. Há questões de resposta única e de múltipla escolha, como na prova real.</p>
 
+      ${readyHTML}
+
       <div class="modes">
+        <button class="mode featured" onclick="startAdaptive()">
+          <div class="mi">🎯</div>
+          <div><h3>Treino inteligente <span class="badge">recomendado</span></h3><p>O app escolhe as questões: mistura seus <b>erros pendentes</b> com os <b>domínios em que você está mais fraco</b>. É onde o estudo rende mais.</p></div>
+        </button>
+        <button class="mode" onclick="startMissed()">
+          <div class="mi">🔁</div>
+          <div><h3>Meus erros ${R && R.pending ? `<span class="badge warn">${R.pending}</span>` : ""}</h3><p>Refaça só o que você já errou, até acertar cada questão duas vezes seguidas e ela sair da lista. Estudar o erro é o que mais aprova.</p></div>
+        </button>
         <button class="mode" onclick="startExam()">
           <div class="mi">▶</div>
           <div><h3>Simulado cronometrado</h3><p>30 questões balanceadas pelos domínios, 40 min, correção só no final — nas mesmas condições da prova (corte 70%).</p></div>
@@ -129,7 +179,7 @@
     </div>`;
     window.scrollTo({ top: 0 });
   };
-  window.resetStats = function () { if (confirm("Apagar todo o histórico de desempenho?")) { saveStats({}); goHome(); } };
+  window.resetStats = function () { if (confirm("Apagar todo o histórico de desempenho?")) { saveStats({}); if (window.Study) Study.reset(); goHome(); } };
 
   window.showPractice = function () {
     stopTimer(); session = null; fc = null; progEl.classList.add("hidden"); timerEl.classList.add("hidden");
@@ -211,15 +261,25 @@
   window.showFlashcards = function () {
     stopTimer(); session = null; fc = null; progEl.classList.add("hidden"); timerEl.classList.add("hidden");
     const total = Object.keys(FC).reduce((n, k) => n + (FC[k] || []).length, 0);
+    const due = window.Study ? Study.dueCards().length : 0;
+    const macN = (FC.mac || []).length;
     app.innerHTML = `
     <div class="hero fade">
       <div class="eyebrow">Flashcards</div>
       <h1 style="font-size:28px">Memorização rápida</h1>
-      <p class="lead">Escolha um baralho. Veja a frente, tente responder de cabeça e vire a carta. Marque <b>"Já sei"</b> ou <b>"Revisar"</b> — as de revisar voltam no fim até você mandar bem em todas.</p>
+      <p class="lead">Repetição espaçada: veja a frente, tente responder de cabeça e vire a carta. O que você marca como <b>"revisar"</b> volta cedo; o que você <b>"já sabe"</b> só reaparece dias depois — e o app lembra disso entre as sessões.</p>
       <div class="topics">
+        <button class="topic" onclick="startFlashcards('due')" style="grid-column:1/-1;border-color:${due ? "var(--accent)" : "var(--line)"}">
+          <div class="trow"><h3>🗓️ Revisar hoje ${due ? `<span class="badge acc">${due}</span>` : ""}</h3><span class="cnt">repetição espaçada</span></div>
+          <span class="stat">${due ? `${due} carta(s) no ponto ideal de revisão hoje` : "nada pendente agora — volte amanhã ou estude um baralho abaixo"}</span>
+        </button>
+        <button class="topic" onclick="startFlashcards('mac')" style="grid-column:1/-1">
+          <div class="trow"><h3>🧠 Macetes (mnemônicos)</h3><span class="cnt">${macN} cartas</span></div>
+          <span class="stat">ganchos de memória p/ portas, CVSS, Kill Chain, fórmulas…</span>
+        </button>
         <button class="topic" onclick="startFlashcards('all')" style="grid-column:1/-1">
-          <div class="trow"><h3>Baralho completo — todos os domínios</h3><span class="cnt">${total} cartas</span></div>
-          <span class="stat">mistura tudo, embaralhado</span>
+          <div class="trow"><h3>Baralho completo — tudo</h3><span class="cnt">${total} cartas</span></div>
+          <span class="stat">mistura todos os domínios + macetes</span>
         </button>
         ${Object.keys(AREAS).map(k => `
           <button class="topic" onclick="startFlashcards('${k}')">
@@ -232,7 +292,12 @@
   };
 
   window.startFlashcards = function (area) {
-    let src = area === "all" ? [].concat.apply([], Object.keys(FC).map(k => (FC[k] || []).map(c => ({ f: c.f, b: c.b, area: k })))) : (FC[area] || []).map(c => ({ f: c.f, b: c.b, area: area }));
+    let src;
+    if (area === "due") src = window.Study ? Study.dueCards() : [];
+    else if (area === "all") src = [].concat.apply([], Object.keys(FC).map(k => (FC[k] || []).map(c => ({ f: c.f, b: c.b, area: k }))));
+    else src = (FC[area] || []).map(c => ({ f: c.f, b: c.b, area: area }));
+    // garante id para a repetição espaçada
+    src = src.map(c => ({ f: c.f, b: c.b, area: c.area, id: c.id || (window.Study ? Study.cardId(c.area, c.f) : "") }));
     if (!src.length) { showFlashcards(); return; }
     fc = { area: area, queue: shuffle(src), total: src.length, known: 0, flipped: false };
     renderCard();
@@ -248,7 +313,7 @@
     app.innerHTML = `
     <div class="fade">
       <div class="qhead">
-        <span class="tag"><span class="dot" style="background:${AREAS[a] ? AREAS[a].cor : "var(--accent)"}"></span>${AREAS[a] ? AREAS[a].nome : "Flashcards"}</span>
+        <span class="tag"><span class="dot" style="background:${AREAS[a] ? AREAS[a].cor : "var(--accent)"}"></span>${AREAS[a] ? AREAS[a].nome : (a === "mac" ? "Macetes" : a === "due" ? "Revisar hoje" : "Flashcards")}</span>
         <span class="spacer"></span>
         <span class="qcount">Sabidas <b>${fc.known}</b>/${fc.total} · restam ${fc.queue.length}</span>
       </div>
@@ -277,8 +342,9 @@
   window.flipCard = function () { fc.flipped = !fc.flipped; renderCard(); };
   window.rateCard = function (known) {
     const card = fc.queue.shift();
+    if (window.Study && card && card.id) Study.srsRate(card.id, known); // agenda a próxima revisão
     if (known) fc.known++;
-    else fc.queue.push(card); // volta para o fim
+    else fc.queue.push(card); // volta para o fim desta sessão
     fc.flipped = false;
     renderCard();
   };
@@ -372,6 +438,40 @@
     fc = null; // sai do modo flashcards ao iniciar um quiz
     return Object.assign({ list, idx: 0, answers: list.map(() => null), flags: {}, review: false }, opts);
   }
+
+  // Treino inteligente: erros pendentes + domínios mais fracos, interleaved
+  window.startAdaptive = function () {
+    if (!window.Study) { startAll(); return; }
+    const raw = Study.adaptiveSet(15);
+    if (!raw.length) { startAll(); return; }
+    const list = raw.map(prepareQuestion);
+    session = newSession(list, { instant: true, mode: "adaptive" });
+    renderQuiz();
+  };
+
+  // Meus erros: só as questões pendentes (erradas e não dominadas)
+  window.startMissed = function () {
+    if (!window.Study) { startAll(); return; }
+    const raw = Study.missedSet();
+    if (!raw.length) {
+      stopTimer(); session = null; fc = null; progEl.classList.add("hidden"); timerEl.classList.add("hidden");
+      app.innerHTML = `
+      <div class="hero fade" style="text-align:center">
+        <div style="font-size:48px;margin:24px 0 8px">✅</div>
+        <h1 style="font-size:24px">Sem erros pendentes!</h1>
+        <p class="lead" style="margin:0 auto 22px">Você não tem questões erradas para revisar. Faça um <b>Treino inteligente</b> ou um <b>Simulado</b> — os que você errar aparecem aqui para você dominar.</p>
+        <div class="qnav" style="justify-content:center">
+          <button class="btn primary" onclick="startAdaptive()">Treino inteligente</button>
+          <button class="btn" onclick="goHome()">Início</button>
+        </div>
+      </div>`;
+      window.scrollTo({ top: 0 });
+      return;
+    }
+    const list = shuffle(raw).map(prepareQuestion);
+    session = newSession(list, { instant: true, mode: "missed" });
+    renderQuiz();
+  };
 
   /* =============================== CRONÔMETRO =============================== */
   function startTimer() {
@@ -504,7 +604,7 @@
     } else {
       const already = s.answers[s.idx] !== null;
       s.answers[s.idx] = oi;
-      if (s.instant && !already) recordAnswer(q.a, oi === q.c[0] && q.c.length === 1);
+      if (s.instant && !already) rec(q, oi === q.c[0] && q.c.length === 1);
       renderQuiz();
     }
   };
@@ -512,7 +612,7 @@
     const s = session, q = s.list[s.idx];
     const sel = Array.isArray(s.answers[s.idx]) ? s.answers[s.idx] : [];
     s._mConfirmed = s.idx;
-    if (s.instant) recordAnswer(q.a, arraysEqual(sel, q.c));
+    if (s.instant) rec(q, arraysEqual(sel, q.c));
     renderQuiz();
   };
   window.nextQ = function () { if (session.idx < session.list.length - 1) { session.idx++; session._mConfirmed = restoreMConfirm(); renderQuiz(); } };
@@ -530,7 +630,7 @@
   window.finish = function (byTime) {
     const s = session; stopTimer();
     if (!s.instant) {
-      s.list.forEach((q, i) => { const a = s.answers[i]; const sel = Array.isArray(a) ? a : (a === null ? [] : [a]); recordAnswer(q.a, arraysEqual(sel, q.c)); });
+      s.list.forEach((q, i) => { const a = s.answers[i]; const sel = Array.isArray(a) ? a : (a === null ? [] : [a]); rec(q, arraysEqual(sel, q.c)); });
     }
     progBar.style.width = "100%";
     timerEl.classList.add("hidden");
